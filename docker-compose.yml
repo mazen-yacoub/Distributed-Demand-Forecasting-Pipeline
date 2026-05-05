@@ -1,6 +1,7 @@
 services:
   spark-master:
-    image: apache/spark:3.5.0
+    build: .
+    image: demand-forecasting-spark:3.5.0
     environment:
       - SPARK_MODE=master
     ports:
@@ -12,7 +13,7 @@ services:
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
 
   spark-worker:
-    image: apache/spark:3.5.0
+    image: demand-forecasting-spark:3.5.0
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
