@@ -2,6 +2,8 @@
 
 A containerized PySpark project that simulates a distributed data engineering workflow for retail demand forecasting. The project focuses on distributed processing, medallion architecture, schema enforcement, partitioned Parquet storage, Spark SQL transformations, and Spark MLlib execution inside Docker.
 
+![Project Architecture](https://github.com/user-attachments/assets/eae1f9f6-184d-47bd-9afe-934a138b1fcc)
+
 ## Architecture
 
 ```text
