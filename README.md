@@ -1,72 +1,106 @@
-# Distributed-Demand-Forecasting-Pipeline
-This project implements a Medallion Architecture using PySpark through a distributed environment (Spark), the system demonstrates the ability to handle massive datasets through strategic repartitioning, schema enforcement, and columnar storage (Parquet). The pipeline is containerized via Docker to ensure reproducibility.
+# Distributed Demand Forecasting Pipeline
 
-## Pipeline Flow
+A containerized PySpark project that simulates a distributed data engineering workflow for retail demand forecasting. The project focuses on distributed processing, medallion architecture, schema enforcement, partitioned Parquet storage, Spark SQL transformations, and Spark MLlib execution inside Docker.
 
-```text
-data/bronze/*.csv
-  -> Phase 1: Bronze to Silver ingestion
-  -> data/silver/sales_report/
-  -> Phase 2: Silver to Gold feature engineering
-  -> data/gold/demand_features/
-  -> Phase 3: scalable ML training
-  -> models/gbt_demand_forecaster/
-```
-
-## Phase 1: Bronze to Silver
-
-Phase 1 reads the raw Online Retail CSV files from the Bronze layer, applies a strict schema, cleans the transactional data, and writes the result as partitioned Parquet.
-
-Main module:
+## Architecture
 
 ```text
-src/ingestion.py
+Local project volume
+  -> mounted into Spark containers at /opt/spark/work-dir
+
+Bronze CSV
+  -> Phase 1: ingestion and cleaning
+  -> Silver partitioned Parquet
+  -> Phase 2: feature engineering
+  -> Gold feature store
+  -> Phase 3: Spark ML pipeline
+  -> trained model artifact
 ```
 
-Key transformations:
+The local filesystem volume is used as an HDFS-style storage simulation for development. Spark master and worker containers read and write through the same mounted project directory, which keeps the pipeline reproducible without requiring a separate Hadoop cluster.
 
-- Enforces an explicit schema for invoice, product, customer, country, quantity, and price fields.
-- Converts `InvoiceDate` from string to timestamp.
-- Drops rows missing required identifiers: `InvoiceNo` and `StockCode`.
-- Removes non-positive quantities so the pipeline focuses on sales demand.
-- Fills missing `CustomerID` values with `Unknown`.
-- Writes Silver Parquet partitioned by `Country`.
+## Tech Stack
 
-Silver output:
+- Docker Compose
+- Apache Spark 3.5.0
+- PySpark
+- Spark SQL
+- Spark MLlib
+- Parquet
+- Python
+
+## Project Structure
+
+```text
+.
+├── data/
+│   ├── bronze/                 # Raw input CSV
+│   ├── silver/                 # Generated cleaned Parquet output
+│   └── gold/                   # Generated feature store output
+├── models/                     # Generated Spark ML model artifacts
+├── src/
+│   ├── ingestion.py            # Phase 1: Bronze -> Silver
+│   ├── features.py             # Phase 2: Silver -> Gold
+│   ├── ml_training.py          # Phase 3: Gold -> ML model
+│   └── utils.py                # Spark session helper
+├── Dockerfile                  # Project Spark image with Python deps
+├── docker-compose.yml          # Spark master and worker services
+├── main.py                     # Pipeline entrypoint
+├── requirements.txt
+└── README.md
+```
+
+`data/silver`, `data/gold`, and `models` are generated outputs and are ignored by Git.
+
+## Phase 1: Bronze To Silver
+
+Phase 1 reads raw Online Retail CSV data from:
+
+```text
+data/bronze/
+```
+
+It applies a strict schema contract, cleans the data, and writes partitioned Parquet to:
 
 ```text
 data/silver/sales_report/
 ```
 
-## Phase 2: Silver to Gold
+Main logic:
 
-Phase 2 converts cleaned invoice-level data into a forecasting-ready feature store.
+- Explicit `StructType` schema for stable ingestion.
+- Timestamp conversion for `InvoiceDate`.
+- Removal of rows missing critical identifiers.
+- Removal of non-positive quantities to focus on sales demand.
+- Missing customer handling with `Unknown`.
+- Parquet output partitioned by `Country`.
 
-Main module:
+## Phase 2: Silver To Gold
+
+Phase 2 transforms cleaned invoice-level data into a forecasting-ready feature store.
+
+Output:
 
 ```text
-src/features.py
+data/gold/demand_features/
 ```
 
-The Silver data is still transactional, meaning one product can appear many times on the same day. Forecasting needs a stable time-series grain, so Phase 2 first aggregates the data into daily demand:
+The feature store grain is:
 
 ```text
 Country + product_id + sales_date
 ```
 
-In the Online Retail dataset, `StockCode` is used as the product identifier and is renamed to `product_id` for modeling clarity.
+`StockCode` is treated as `product_id`.
 
-Daily demand columns:
+Daily demand metrics:
 
-- `Country`
-- `product_id`
-- `sales_date`
 - `daily_quantity`
 - `daily_revenue`
 - `transaction_count`
 - `unique_customers`
 
-Feature columns:
+Time-series features:
 
 - `lag_7_quantity`
 - `lag_30_quantity`
@@ -74,154 +108,101 @@ Feature columns:
 - `rolling_30d_avg_quantity`
 - `rolling_7d_avg_revenue`
 - `rolling_30d_avg_revenue`
-- `feature_generated_date`
 
-The rolling windows use previous rows only, so the current day's target value is not included in the current day's features. This avoids data leakage when the Gold layer is used for forecasting.
+The rolling windows use previous records only, which avoids using current-day demand inside current-day model features.
 
-Before calculating time-series features, the daily demand data is repartitioned by:
+Before window calculations, the data is repartitioned by:
 
 ```text
 Country, product_id
 ```
 
-This matches the window partition keys and helps Spark distribute per-product time-series work more efficiently.
-
-Gold output:
-
-```text
-data/gold/demand_features/
-```
+This aligns physical distribution with the time-series window partitions.
 
 ## Phase 3: Scalable ML Pipeline
 
-Phase 3 trains a distributed Spark ML model on the Gold feature store.
+Phase 3 trains a Spark MLlib regression pipeline on the Gold feature store.
 
-Main module:
-
-```text
-src/ml_training.py
-```
-
-Input:
-
-```text
-data/gold/demand_features/
-```
-
-Outputs:
+Output:
 
 ```text
 models/gbt_demand_forecaster/
 models/gbt_demand_forecaster_metrics.json
 ```
 
-### Prediction Target
-
-The model predicts:
-
-```text
-daily_quantity
-```
-
-Inside Spark MLlib, this target is stored as:
-
-```text
-label
-```
-
-So the model learns:
-
-```text
-Given historical product demand behavior, predict today's demand quantity.
-```
-
-### ML Feature Selection
-
-The model uses only past-looking features:
-
-- `lag_7_quantity`
-- `lag_30_quantity`
-- `rolling_7d_avg_quantity`
-- `rolling_30d_avg_quantity`
-- `rolling_7d_avg_revenue`
-- `rolling_30d_avg_revenue`
-
-Current-day analytics columns such as `daily_revenue`, `transaction_count`, and `unique_customers` are not used as model inputs. They are useful for reporting, but they may leak information that would not be available before the prediction day.
-
-Rows with missing lag or rolling values are dropped before training. This usually removes the earliest rows in each product-country time series, because those rows do not yet have enough history.
-
-### Vectorization
-
-Spark MLlib estimators expect model inputs in one vector column named:
-
-```text
-features
-```
-
-Phase 3 uses `VectorAssembler` to convert multiple numeric columns into that single vector:
-
-```text
-lag_7_quantity, lag_30_quantity, rolling_7d_avg_quantity, ...
-  -> features
-```
-
-### Model
-
-The training pipeline uses:
+Pipeline stages:
 
 ```text
 VectorAssembler -> GBTRegressor
 ```
 
-`GBTRegressor` means Gradient Boosted Trees for regression. It is a strong first model for tabular forecasting features because it can learn nonlinear relationships between recent demand patterns and future quantity.
+The ML stage demonstrates distributed feature vectorization, model training, chronological train/test splitting, and distributed regression evaluation. The model is included as a final intelligence layer on top of the data platform; the main emphasis of this project is the scalable data pipeline and reproducible Spark environment.
 
-### Evaluation
+## Running The Project
 
-The data is split chronologically:
+Build the project Spark image:
 
-```text
-earlier dates -> train set
-later dates   -> test set
+```bash
+docker compose build
 ```
-
-This is better than a random split for forecasting because the model is evaluated on future-like data.
-
-Phase 3 calculates:
-
-- `RMSE`: root mean squared error. Larger mistakes are penalized more.
-- `MAE`: mean absolute error. Easier to interpret as average units of demand error.
-
-Both metrics are calculated with Spark MLlib's `RegressionEvaluator`, so evaluation runs in a distributed way.
-
-## Running the Pipeline
 
 Start the Spark cluster:
 
 ```bash
-docker compose build
 docker compose up -d
 ```
 
-`docker compose build` creates the project Spark image and installs Python dependencies from `requirements.txt`. Phase 3 needs `numpy` because Spark MLlib imports it internally.
-
-Run one pipeline stage from the Spark master container:
+Check the Spark master container:
 
 ```bash
-docker exec -it <master-container-id> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase1
-docker exec -it <master-container-id> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase2
-docker exec -it <master-container-id> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase3
+docker ps
 ```
 
-Run the full reproducible pipeline:
+Run the full pipeline:
 
 ```bash
-docker exec -it <master-container-id> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py full
+docker exec -it <spark-master-container> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py full
 ```
 
-Expected result:
+Run a single phase:
 
-- Phase 1 writes partitioned Silver Parquet to `data/silver/sales_report/`.
-- Phase 2 writes partitioned Gold Parquet to `data/gold/demand_features/`.
-- Phase 3 writes a trained model to `models/gbt_demand_forecaster/`.
-- Phase 3 writes metrics to `models/gbt_demand_forecaster_metrics.json`.
-- Successful Spark output directories contain a `_SUCCESS` marker file.
+```bash
+docker exec -it <spark-master-container> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase1
+docker exec -it <spark-master-container> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase2
+docker exec -it <spark-master-container> /opt/spark/bin/spark-submit /opt/spark/work-dir/main.py phase3
+```
+
+Example container name from Docker Compose:
+
+```text
+distributed-demand-forecasting-pipeline-spark-master-1
+```
+
+## Inspecting Outputs
+
+Preview the Gold feature store with PySpark:
+
+```bash
+docker exec -it <spark-master-container> /opt/spark/bin/pyspark
+```
+
+Then inside PySpark:
+
+```python
+df = spark.read.parquet("/opt/spark/work-dir/data/gold/demand_features")
+df.printSchema()
+df.show(10, truncate=False)
+```
+
+Check the trained model artifact:
+
+```text
+models/gbt_demand_forecaster/
+```
+
+## Notes
+
+- The Spark cluster is simulated locally with Docker Compose.
+- The project directory is mounted into Spark containers to simulate shared distributed storage.
+- Parquet outputs and model artifacts are generated by the pipeline and are not intended to be committed.
+- If publishing without the raw dataset, place a compatible Online Retail CSV file under `data/bronze/` before running the pipeline.

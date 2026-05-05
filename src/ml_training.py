@@ -162,8 +162,6 @@ def train_demand_forecasting_model():
     print("Success: Trained Gradient Boosted Trees demand forecasting model.")
     print(f"Model saved to: {MODEL_OUTPUT_PATH}")
     print(f"Metrics saved to: {METRICS_OUTPUT_PATH}")
-    print(f"RMSE: {metrics['rmse']}")
-    print(f"MAE: {metrics['mae']}")
 
 
 if __name__ == "__main__":

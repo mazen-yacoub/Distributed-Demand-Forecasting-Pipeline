@@ -43,6 +43,7 @@ def run_pipeline(mode="full"):
 
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {str(e)}")
+        raise
 
 
 if __name__ == "__main__":
